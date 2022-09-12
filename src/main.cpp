@@ -65,11 +65,11 @@ void competition_initialize(){}
 void autonomous(){
 	// TEST FUNCTION
 	profiler->setTarget(2_ft);
-	chassis->waitUntilSettled();
+	profiler->waitUntilSettled();
 	profiler->setTarget(90_deg);
-	chassis->waitUntilSettled();
+	profiler->waitUntilSettled();
 	profiler->setTarget(-2_ft);
-	chassis->waitUntilSettled();
+	profiler->waitUntilSettled();
 }
 
 /**
