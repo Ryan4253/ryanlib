@@ -2,6 +2,7 @@
 #include "ryanlib/api.hpp"
 #include "okapi/api.hpp"
 using namespace okapi;
+using namespace ryan;
 
 // Chassis' max velocity, acceleration, and jerk
 ProfileConstraint moveLimit({5.3_ftps, 6_ftps2, 27_ftps3});
