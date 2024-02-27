@@ -1,115 +1,70 @@
 #include "AsyncProfiler.hpp"
 
 namespace ryan{
-AsyncMotionProfiler::AsyncMotionProfiler(std::shared_ptr<okapi::ChassisController> iChassis, 
-                                         std::unique_ptr<LinearMotionProfile> iMove, 
-                                         std::unique_ptr<FFVelocityController> iLeftLinear, 
-                                         std::unique_ptr<FFVelocityController> iRightLinear,
-                                         std::unique_ptr<FFVelocityController> iLeftTrajectory,
-                                         std::unique_ptr<FFVelocityController> iRightTrajectory,
-                                         const okapi::TimeUtil& iTimeUtil): timeUtil(iTimeUtil)
-{
-    chassis = std::move(iChassis);
-    profiler = std::move(iMove);
-    leftLinear =  std::move(iLeftLinear);
-    rightLinear = std::move(iRightLinear);
-    leftTrajectory = std::move(iLeftTrajectory);
-    rightTrajectory = std::move(iRightTrajectory);
-    rate = std::move(timeUtil.getRate());
-    timer = std::move(timeUtil.getTimer());
-    linearCustom = true;
-    trajectoryCustom = true;
+AsyncMotionProfiler::AsyncMotionProfiler(std::shared_ptr<okapi::ChassisController> chassis, 
+                                         std::unique_ptr<LinearMotionProfile> profile, 
+                                         std::unique_ptr<FFVelocityController> leftController, 
+                                         std::unique_ptr<FFVelocityController> rightController,
+                                         const okapi::TimeUtil& timeUtil) : 
+    chassis(chassis),
+    profile(std::move(profile)),
+    leftController(std::move(leftController)),
+    rightController(std::move(rightController)),
+    timeUtil(timeUtil),
+    rate(std::move(timeUtil.getRate())),
+    timer(std::move(timeUtil.getTimer())),
+    leftMotor(std::static_pointer_cast<okapi::SkidSteerModel>(chassis->getModel())->getLeftSideMotor()),
+    rightMotor(std::move(std::static_pointer_cast<okapi::SkidSteerModel>(chassis->getModel())->getRightSideMotor())),
+    useCustomVelocityController(true){}
 
-    leftMotor = std::move(std::static_pointer_cast<okapi::SkidSteerModel>(chassis->getModel())->getLeftSideMotor());
-    rightMotor = std::move(std::static_pointer_cast<okapi::SkidSteerModel>(chassis->getModel())->getRightSideMotor());
-}
-
-AsyncMotionProfiler::AsyncMotionProfiler(std::shared_ptr<okapi::ChassisController> iChassis, 
-    std::unique_ptr<LinearMotionProfile> iMove, 
-    const okapi::TimeUtil& iTimeUtil): timeUtil(iTimeUtil){
-    chassis = std::move(iChassis);
-    profiler = std::move(iMove);
-    rate = std::move(timeUtil.getRate());
-    timer = std::move(timeUtil.getTimer());
-
-    leftMotor = std::move(std::static_pointer_cast<okapi::SkidSteerModel>(chassis->getModel())->getLeftSideMotor());
-    rightMotor = std::move(std::static_pointer_cast<okapi::SkidSteerModel>(chassis->getModel())->getRightSideMotor());
-}
-
-AsyncMotionProfiler::AsyncMotionProfiler(std::shared_ptr<okapi::ChassisController> iChassis, 
-                std::unique_ptr<LinearMotionProfile> iMove, 
-                std::unique_ptr<FFVelocityController> iLeft,
-                std::unique_ptr<FFVelocityController> iRight,
-                bool velFlag,
-                const okapi::TimeUtil& iTimeUtil): timeUtil(iTimeUtil){
-    chassis = std::move(iChassis);
-    profiler = std::move(iMove);
-    if(velFlag){
-        leftLinear = std::move(iLeft);
-        rightLinear = std::move(iRight);
-        linearCustom = true;
-    }
-    else{
-        leftTrajectory = std::move(iLeft);
-        rightTrajectory = std::move(iRight);
-        trajectoryCustom = true;
-    }
-    rate = std::move(timeUtil.getRate());
-    timer = std::move(timeUtil.getTimer());
-
-    leftMotor = std::move(std::static_pointer_cast<okapi::SkidSteerModel>(chassis->getModel())->getLeftSideMotor());
-    rightMotor = std::move(std::static_pointer_cast<okapi::SkidSteerModel>(chassis->getModel())->getRightSideMotor());
-}
+AsyncMotionProfiler::AsyncMotionProfiler(std::shared_ptr<okapi::ChassisController> chassis, 
+                                         std::unique_ptr<LinearMotionProfile> profile, 
+                                         const okapi::TimeUtil& timeUtil) : 
+    chassis(chassis),
+    profile(std::move(profile)),
+    timeUtil(timeUtil),
+    rate(std::move(timeUtil.getRate())),
+    timer(std::move(timeUtil.getTimer())),
+    leftMotor(std::static_pointer_cast<okapi::SkidSteerModel>(chassis->getModel())->getLeftSideMotor()),
+    rightMotor(std::move(std::static_pointer_cast<okapi::SkidSteerModel>(chassis->getModel())->getRightSideMotor())),
+    useCustomVelocityController(false){}
 
 void AsyncMotionProfiler::setConstraint(const ProfileConstraint& iConstraint){
-    stop();
-    lock.take(5);
-    profiler->setConstraint(iConstraint);
-    lock.give();
+    std::lock_guard<pros::Mutex> lock(mutex);
+    resetRobot();
+    profile->setConstraint(iConstraint);
 }
 
 void AsyncMotionProfiler::setTarget(okapi::QLength distance, bool waitUntilSettled){
-    lock.take(5);
+    std::lock_guard<pros::Mutex> lock(mutex);
+    resetRobot();
     setState(MotionProfileState::MOVE);
-    profiler->setDistance(distance);
-    leftMotor->tarePosition();
-    rightMotor->tarePosition();
-    chassis->getModel()->tank(0, 0);
-    maxTime = profiler->getTotalTime() + 0.02 * okapi::second;
-    timer->placeMark();
-    lock.give();
+    profile->setDistance(distance);
+    motionDuration = profile->getTotalTime() + 0.02 * okapi::second;
 
     if(waitUntilSettled){
         this->waitUntilSettled();
     }
 }
 
-void AsyncMotionProfiler::setTarget(const Trajectory& iPath, bool waitUntilSettled){
-    lock.take(5);
+void AsyncMotionProfiler::setTarget(const Trajectory& path, bool waitUntilSettled){
+    std::lock_guard<pros::Mutex> lock(mutex);
+    resetRobot();
     setState(MotionProfileState::FOLLOW);
-    leftMotor->tarePosition();
-    rightMotor->tarePosition();
-    chassis->getModel()->tank(0, 0);
-    path = iPath;
-    maxTime = path.size() * 10 * okapi::millisecond + 0.02 * okapi::millisecond;
-    timer->placeMark();
-    lock.give();
+    this->path = path;
+    motionDuration = (path.size() * 10 + 20) * okapi::millisecond;
 
     if(waitUntilSettled){
         this->waitUntilSettled();
     }
 }
 
-void AsyncMotionProfiler::setTarget(okapi::QAngle iAngle, bool waitUntilSettled){
-    lock.take(5);
+void AsyncMotionProfiler::setTarget(okapi::QAngle angle, bool waitUntilSettled){
+    std::lock_guard<pros::Mutex> lock(mutex);
+    resetRobot();
     setState(MotionProfileState::TURN);
-    profiler->setDistance(iAngle.convert(okapi::radian) * chassis->getChassisScales().wheelTrack/2);
-    leftMotor->tarePosition();
-    rightMotor->tarePosition();
-    chassis->getModel()->tank(0, 0);
-    maxTime = profiler->getTotalTime() + 0.02 * okapi::second;
-    timer->placeMark();
-    lock.give();
+    profile->setDistance(angle.convert(okapi::radian) * chassis->getChassisScales().wheelTrack / 2);
+    motionDuration = profile->getTotalTime() + 0.02 * okapi::second;
     
     if(waitUntilSettled){
         this->waitUntilSettled();
@@ -117,82 +72,75 @@ void AsyncMotionProfiler::setTarget(okapi::QAngle iAngle, bool waitUntilSettled)
 }
 
 void AsyncMotionProfiler::stop(){
-    lock.take(5);
+    std::lock_guard<pros::Mutex> lock(mutex);
     setState(MotionProfileState::IDLE);
-    (chassis->getModel())->tank(0, 0);
-    lock.give();
+    resetRobot();
 }
 
 void AsyncMotionProfiler::loop(){
-    TrajectoryPoint pt;
-    double leftPower, rightPower;
+    using namespace ryan::Math;
+
     okapi::EmaFilter lFilter(0.7);
     okapi::EmaFilter rFilter(0.7);
 
+    const auto scales = chassis->getChassisScales();
+    const auto ratio = chassis->getGearsetRatioPair();
+    
     while(true){
-        lock.take(5);
-        okapi::QTime time = timer->getDtFromMark();
+        rate->delayUntil(10);
+        std::lock_guard<pros::Mutex> lock(mutex);
 
-        double leftPos = Math::tickToFt(leftMotor->getPosition(), chassis->getChassisScales(), chassis->getGearsetRatioPair());
-        double leftVel = Math::rpmToFtps(leftMotor->getActualVelocity(), chassis->getChassisScales(), chassis->getGearsetRatioPair());
-        double rightPos = Math::tickToFt(rightMotor->getPosition(), chassis->getChassisScales(), chassis->getGearsetRatioPair());
-        double rightVel = Math::rpmToFtps(rightMotor->getActualVelocity(), chassis->getChassisScales(), chassis->getGearsetRatioPair());
+        const okapi::QTime timeElapsed = timer->getDtFromMark();
 
-        std::cout << lFilter.filter(leftVel) << std::endl;
-        //std::cout << rFilter.filter(rightVel) << std::endl;
-        //std::cout << leftPos << std::endl;
-        //std::cout << rightPos << std::endl;
-
-        if(getState() == MotionProfileState::IDLE){
-
-        }
-        else if(time > maxTime){
+        if(timeElapsed > motionDuration){
             setState(MotionProfileState::IDLE);
             chassis->getModel()->tank(0, 0);
         }
-        else if(getState() == MotionProfileState::MOVE){
-            pt = profiler->get(time);
-            if(linearCustom){
-                leftPower = leftLinear->step(pt.leftPosition, pt.leftVelocity, pt.leftAcceleration, leftPos, leftVel);
-                rightPower = rightLinear->step(pt.rightPosition, pt.rightVelocity, pt.rightAcceleration, rightPos, rightVel);
-                chassis->getModel()->tank(leftPower, rightPower);
-            }
-            else{
-                double vel = Math::ftpsToRPM(pt.leftVelocity, chassis->getChassisScales(), chassis->getGearsetRatioPair());
-                leftMotor->moveVelocity(vel);
-                rightMotor->moveVelocity(vel);
-            }
-        }
-        else if(getState() == MotionProfileState::TURN){
-            pt = profiler->get(time);
-            if(linearCustom){
-                leftPower = leftLinear->step(pt.leftPosition, pt.leftVelocity, pt.leftAcceleration, leftPos, leftVel);
-                rightPower = rightLinear->step(-pt.rightPosition, -pt.rightVelocity, -pt.rightAcceleration, rightPos, rightVel);
-                chassis->getModel()->tank(leftPower, rightPower);
-            }
-            else{
-                double vel = Math::ftpsToRPM(pt.leftVelocity, chassis->getChassisScales(), chassis->getGearsetRatioPair());
-                leftMotor->moveVelocity(vel);
-                rightMotor->moveVelocity(-vel);
-            }
-        }
-        else if(getState() == MotionProfileState::FOLLOW){
-            pt = path[(int)(time.convert(okapi::millisecond) / 10)];
-            if(trajectoryCustom){
-                leftPower = leftTrajectory->step(pt.leftPosition, pt.leftVelocity, pt.leftAcceleration, leftPos, leftVel);
-                rightPower = rightTrajectory->step(pt.rightPosition, pt.rightVelocity, pt.rightAcceleration, rightPos, rightVel);
-                chassis->getModel()->tank(leftPower, rightPower);
-            }
-            else{
-                double leftVel = Math::ftpsToRPM(pt.leftVelocity, chassis->getChassisScales(), chassis->getGearsetRatioPair());
-                double rightVel = Math::ftpsToRPM(pt.rightVelocity, chassis->getChassisScales(), chassis->getGearsetRatioPair());
-                leftMotor->moveVelocity(leftVel);
-                rightMotor->moveVelocity(rightVel);
-            }
+
+        TrajectoryPoint segment;
+        switch(getState()){
+            case MotionProfileState::IDLE:
+                continue;
+            
+            case MotionProfileState::MOVE:
+                segment = profile->get(timeElapsed);
+                break;
+            
+            case MotionProfileState::TURN:
+                segment = profile->get(timeElapsed);
+                segment.rightPosition = -segment.rightPosition;
+                segment.rightVelocity = -segment.rightVelocity;
+                segment.rightAcceleration = -segment.rightAcceleration;
+                break;
+
+            case MotionProfileState::FOLLOW:
+                segment = path[(int)(timeElapsed.convert(okapi::millisecond) / 10)];
+                break;
+
+            default:
+                continue;
         }
 
-        lock.give();
-        rate->delayUntil(10);
+        if(useCustomVelocityController){
+            const double leftActualPos = tickToFt(leftMotor->getPosition(), scales, ratio);
+            const double leftActualVel = lFilter.filter(rpmToFtps(leftMotor->getActualVelocity(), scales, ratio));
+            const double rightActualPos = tickToFt(rightMotor->getPosition(), scales, ratio);
+            const double rightActualVel = rFilter.filter(rpmToFtps(rightMotor->getActualVelocity(), scales, ratio));
+
+            const double leftVoltage = leftController->step(
+                segment.leftPosition, segment.leftVelocity, segment.leftAcceleration, leftActualPos, leftActualVel);
+            const double rightVoltage = rightController->step(
+                segment.rightPosition, segment.rightVelocity, segment.rightAcceleration, rightActualPos, rightActualVel);
+            
+            chassis->getModel()->tank(leftVoltage, rightVoltage);
+        }
+        else{
+            const double leftVel = Math::ftpsToRPM(segment.leftVelocity, scales, ratio);
+            const double rightVel = Math::ftpsToRPM(segment.leftVelocity, scales, ratio);
+
+            leftMotor->moveVelocity(leftVel);
+            rightMotor->moveVelocity(rightVel);
+        }
     }
 }
 
@@ -202,91 +150,63 @@ void AsyncMotionProfiler::waitUntilSettled(){
     }
 }
 
-AsyncMotionProfilerBuilder::AsyncMotionProfilerBuilder(){
-    linearInit = false;
-    trajInit = false;
-    driveInit = false;
-    profileInit = false;
+void AsyncMotionProfiler::resetRobot(){
+    chassis->getModel()->tank(0, 0);
+    leftMotor->tarePosition();
+    rightMotor->tarePosition();
+    timer->placeMark();
 }
 
-AsyncMotionProfilerBuilder& AsyncMotionProfilerBuilder::withOutput(std::shared_ptr<okapi::ChassisController> iChassis){
-    chassis = std::move(iChassis);
-    driveInit = true;
+
+AsyncMotionProfilerBuilder& AsyncMotionProfilerBuilder::withOutput(std::shared_ptr<okapi::ChassisController> chassis){
+    this->chassis = chassis;
+    chassisInitialized = true;
     return *this;
 }
 
-AsyncMotionProfilerBuilder& AsyncMotionProfilerBuilder::withProfiler(std::unique_ptr<LinearMotionProfile> iProfiler){
-    profile = std::move(iProfiler);
-    profileInit = true;
+AsyncMotionProfilerBuilder& AsyncMotionProfilerBuilder::withProfiler(std::unique_ptr<LinearMotionProfile> profile){
+    this->profile = std::move(profile);
+    profileInitialized = true;
     return *this;
 }
 
-AsyncMotionProfilerBuilder& AsyncMotionProfilerBuilder::withLinearController(FFVelocityController iLeft, FFVelocityController iRight){
-    leftL = iLeft, rightL = iRight;
-    linearInit = true;
-    return *this;
-
-}
-
-AsyncMotionProfilerBuilder& AsyncMotionProfilerBuilder::withTrajectoryController(FFVelocityController iLeft, FFVelocityController iRight){
-    leftT = iLeft, rightT = iRight;
-    trajInit = true;
+AsyncMotionProfilerBuilder& AsyncMotionProfilerBuilder::withController(FFVelocityController leftController, FFVelocityController rightController){
+    left = leftController, 
+    right = rightController;
+    controllerInitialized = true;
     return *this;
 }
 
 std::shared_ptr<AsyncMotionProfiler> AsyncMotionProfilerBuilder::build(){
-    if(driveInit && profileInit && linearInit && trajInit){
-        std::shared_ptr<AsyncMotionProfiler> ret(new AsyncMotionProfiler(std::move(chassis), 
-                                            std::move(profile), 
-                                            std::make_unique<FFVelocityController>(leftL), 
-                                            std::make_unique<FFVelocityController>(rightL),
-                                            std::make_unique<FFVelocityController>(leftT), 
-                                            std::make_unique<FFVelocityController>(rightT),
-                                            okapi::TimeUtilFactory::createDefault()));
+    if(!chassisInitialized){
+        throw std::invalid_argument("AsyncMotionProfilerBuilder: Chassis not supplied!");
+    }
+
+    if(!profileInitialized){
+        throw std::invalid_argument("AsyncMotionProfilerBuilder: Motion profile not supplied!");
+    }
+
+    if(!controllerInitialized){
+        std::shared_ptr<AsyncMotionProfiler> ret(new AsyncMotionProfiler(
+            chassis,
+            std::move(profile),
+            okapi::TimeUtilFactory::createDefault()
+        ));
 
         ret->startTask();
-        return std::move(ret);
+        return ret;
     }
-    else if(driveInit && profileInit && linearInit){
-        std::shared_ptr<AsyncMotionProfiler> ret(new AsyncMotionProfiler(std::move(chassis), 
-                                    std::move(profile), 
-                                    std::make_unique<FFVelocityController>(leftL), 
-                                    std::make_unique<FFVelocityController>(rightL),
-                                    true,
-                                    okapi::TimeUtilFactory::createDefault()));
 
-        ret->startTask();
-        return std::move(ret);
-    }
-    else if(driveInit && profileInit && trajInit){
-        std::shared_ptr<AsyncMotionProfiler> ret(new AsyncMotionProfiler(std::move(chassis), 
-                                    std::move(profile), 
-                                    std::make_unique<FFVelocityController>(leftT), 
-                                    std::make_unique<FFVelocityController>(rightT),
-                                    false,
-                                    okapi::TimeUtilFactory::createDefault()));
+    std::shared_ptr<AsyncMotionProfiler> ret(new AsyncMotionProfiler(
+        chassis,
+        std::move(profile),
+        std::make_unique<FFVelocityController>(left),
+        std::make_unique<FFVelocityController>(right),
+        okapi::TimeUtilFactory::createDefault()
+    ));
 
-        ret->startTask();
-        return std::move(ret);
-    }
-    else if(driveInit && profileInit){
-        std::shared_ptr<AsyncMotionProfiler> ret(new AsyncMotionProfiler(std::move(chassis), 
-                                    std::move(profile), 
-                                    okapi::TimeUtilFactory::createDefault()));
-
-        ret->startTask();
-        return std::move(ret);
-    }
-    else{
-        throw std::runtime_error("AsyncMotionProfilerBuilder: Not all parameters supplied, failed to build (you need at least a chassis and a profiler");
-    }
+    ret->startTask();
+    return ret;
 }
 
-}
-
-
-
-
-
-
-
+} // namespace ryan

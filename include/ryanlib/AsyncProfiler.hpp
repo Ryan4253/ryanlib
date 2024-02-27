@@ -32,49 +32,28 @@ class AsyncMotionProfiler : public StateMachine<MotionProfileState, MotionProfil
     /**
      * @brief Construct a new Async Motion Profiler object (using all custom velocity control)
      * 
-     * @param iChassis chassis to output to
-     * @param iMove linear motion profile constraint to generate
-     * @param iLeftLinear left velocity controller for linear motion profile
-     * @param iRightLinear right velocity controller for linear motion profile
-     * @param iLeftTrajectory left velocity controller for trajectories
-     * @param iRightTrajectory right velocity controller for trajectories
-     * @param iTimeUtil timer utility
+     * @param chassis chassis to output to
+     * @param profile linear motion profile constraint to generate
+     * @param leftController left velocity controller 
+     * @param rightController right velocity controller 
+     * @param timeUtil timer utility
      */
-    AsyncMotionProfiler(std::shared_ptr<okapi::ChassisController> iChassis, 
-                        std::unique_ptr<LinearMotionProfile> iMove, 
-                        std::unique_ptr<FFVelocityController> iLeftLinear, 
-                        std::unique_ptr<FFVelocityController> iRightLinear,
-                        std::unique_ptr<FFVelocityController> iLeftTrajectory,
-                        std::unique_ptr<FFVelocityController> iRightTrajectory,
-                        const okapi::TimeUtil& iTimeUtil);
+    AsyncMotionProfiler(std::shared_ptr<okapi::ChassisController> chassis, 
+                        std::unique_ptr<LinearMotionProfile> profile, 
+                        std::unique_ptr<FFVelocityController> leftController, 
+                        std::unique_ptr<FFVelocityController> rightController,
+                        const okapi::TimeUtil& timeUtil);
 
     /**
      * @brief Construct a new Async Motion Profiler object (using internal velocity control)
      * 
-     * @param iChassis chassis to output to
-     * @param iMove linear motion profile constraint to generate
-     * @param iTimeUtil timer utility
+     * @param chassis chassis to output to
+     * @param profile linear motion profile constraint to generate
+     * @param timeUtil timer utility
      */
-    AsyncMotionProfiler(std::shared_ptr<okapi::ChassisController> iChassis, 
-                    std::unique_ptr<LinearMotionProfile> iMove, 
-                    const okapi::TimeUtil& iTimeUtil);
-
-    /**
-     * @brief Construct a new Async Motion Profiler object (using either custom or internal velocity control depending on the constructor)
-     * 
-     * @param iChassis chassis to output to
-     * @param iMove linear motion profile to generate
-     * @param iLeft left velocity controller (true for linear, false for trajectory)
-     * @param iRight right velocity controller (true for linear, false for trajectory)
-     * @param velFlag whether linear is custom (true) or trajectory is custom (true)
-     * @param iTimeUtil timer utility
-     */
-    AsyncMotionProfiler(std::shared_ptr<okapi::ChassisController> iChassis, 
-                    std::unique_ptr<LinearMotionProfile> iMove, 
-                    std::unique_ptr<FFVelocityController> iLeft,
-                    std::unique_ptr<FFVelocityController> iRight,
-                    bool velFlag,
-                    const okapi::TimeUtil& iTimeUtil);
+    AsyncMotionProfiler(std::shared_ptr<okapi::ChassisController> chassis, 
+                    std::unique_ptr<LinearMotionProfile> profile, 
+                    const okapi::TimeUtil& timeUtil);
 
     void operator=(const AsyncMotionProfiler& rhs) = delete;
 
@@ -89,33 +68,33 @@ class AsyncMotionProfiler : public StateMachine<MotionProfileState, MotionProfil
     /**
      * @brief sets the motion profile constraints. Note that any movement currently running will be interrupted
      * 
-     * @param iConstraint the kinematic constraints for the motion profile
+     * @param consraint the kinematic constraints for the motion profile
      */
-    void setConstraint(const ProfileConstraint& iConstraint);
+    void setConstraint(const ProfileConstraint& consraint);
 
     /**
      * @brief Set the target distance to move
      * 
-     * @param iDistance target distance
+     * @param distance target distance
      * @param waitUntilSettled whether or not to wait until the motion profile is settled
      */
-    void setTarget(okapi::QLength iDistance, bool waitUntilSettled = false);
+    void setTarget(okapi::QLength distance, bool waitUntilSettled = false);
 
     /**
      * @brief Set the target trajectory to follow
      * 
-     * @param iPath target trajectory to follow
+     * @param path target trajectory to follow
      * @param waitUntilSettled whether or not to wait until the motion profile is settled
      */ 
-    void setTarget(const Trajectory& iPath, bool waitUntilSettled = false);
+    void setTarget(const Trajectory& path, bool waitUntilSettled = false);
 
     /**
      * @brief Set the target angle to turn
      * 
-     * @param iPath target angle to turn
+     * @param angle target angle to turn
      * @param waitUntilSettled whether or not to wait until the motion profile is settled
      */ 
-    void setTarget(okapi::QAngle iAngle, bool waitUntilSettled = false);
+    void setTarget(okapi::QAngle angle, bool waitUntilSettled = false);
 
     /**
      * @brief stop the chassis from moving
@@ -134,28 +113,31 @@ class AsyncMotionProfiler : public StateMachine<MotionProfileState, MotionProfil
     std::shared_ptr<okapi::AbstractMotor> leftMotor;
     std::shared_ptr<okapi::AbstractMotor> rightMotor;
 
-    std::unique_ptr<LinearMotionProfile> profiler;
-    std::unique_ptr<FFVelocityController> leftLinear{nullptr};
-    std::unique_ptr<FFVelocityController> rightLinear{nullptr};
-    std::unique_ptr<FFVelocityController> leftTrajectory{nullptr};
-    std::unique_ptr<FFVelocityController> rightTrajectory{nullptr};
+    std::unique_ptr<LinearMotionProfile> profile;
+    std::unique_ptr<FFVelocityController> leftController{nullptr};
+    std::unique_ptr<FFVelocityController> rightController{nullptr};
 
     okapi::TimeUtil timeUtil;
     std::unique_ptr<okapi::AbstractRate> rate;
     std::unique_ptr<okapi::AbstractTimer> timer;
-    okapi::QTime maxTime{0.0};
+    okapi::QTime motionDuration{0.0};
 
     Trajectory path;
-    pros::Mutex lock;
+    pros::Mutex mutex;
 
-    bool trajectoryCustom = false;
-    bool linearCustom = false;
+    bool useCustomVelocityController{false};
 
     /**
      * @brief task loop
      * 
      */
     void loop() override;
+
+    /**
+     *  @brief resets robot sensors and motor for new movement
+     * 
+    */
+    void resetRobot();
 };
 
 
@@ -169,7 +151,7 @@ class AsyncMotionProfilerBuilder{
      * @brief Constructs a new Async Motion Profiler Builder object
      * 
      */
-    AsyncMotionProfilerBuilder();
+    AsyncMotionProfilerBuilder() = default;
 
     /**
      * @brief Destroys the Async Motion Profiler Builder object
@@ -180,55 +162,44 @@ class AsyncMotionProfilerBuilder{
     /**
      * @brief sets the chassis object for the profiler to output to
      * 
-     * @param iChassis the chassis object to output to
+     * @param chassis the chassis object to output to
      * @return AsyncMotionProfilerBuilder& an ongoing builder
      */
-    AsyncMotionProfilerBuilder& withOutput(std::shared_ptr<okapi::ChassisController> iChassis);
+    AsyncMotionProfilerBuilder& withOutput(std::shared_ptr<okapi::ChassisController> chassis);
 
     /**
      * @brief sets the motion profile generator to use for linear movements
      * 
-     * @param iProfiler the profile generator
+     * @param profiler the profile generator
      * @return AsyncMotionProfilerBuilder& 
      */
-    AsyncMotionProfilerBuilder& withProfiler(std::unique_ptr<LinearMotionProfile> iProfiler);
+    AsyncMotionProfilerBuilder& withProfiler(std::unique_ptr<LinearMotionProfile> profile);
 
     /**
-     * @brief sets the motor controller to use for linear movements
+     * @brief sets the motor controller to use
      * 
-     * @param iLeft 
-     * @param iRight 
+     * @param leftController 
+     * @param rightController 
      * @return AsyncMotionProfilerBuilder& 
      */
-    AsyncMotionProfilerBuilder& withLinearController(FFVelocityController iLeft, FFVelocityController iRight);
+    AsyncMotionProfilerBuilder& withController(FFVelocityController leftController, FFVelocityController rightController);
 
     /**
-     * @brief sets the motor controller to use when following paths    
-     * 
-     * @param iLeft 
-     * @param iRight 
-     * @return AsyncMotionProfilerBuilder& 
-     */
-    AsyncMotionProfilerBuilder& withTrajectoryController(FFVelocityController iLeft, FFVelocityController iRight);
-
-    /**
-     * @brief builds the async motion profiler object with the specified parameters. The thread is started automaically
+     * @brief builds the async motion profiler object with the specified parameters. The task is started automaically
      * 
      * @return std::shared_ptr<AsyncMotionProfiler> the built async motion profiler
      */
     std::shared_ptr<AsyncMotionProfiler> build();
 
     private:
-    std::unique_ptr<LinearMotionProfile> profile;
-    std::shared_ptr<okapi::ChassisController> chassis;
-    FFVelocityController leftL;
-    FFVelocityController rightL;
-    FFVelocityController leftT;
-    FFVelocityController rightT;
+    std::unique_ptr<LinearMotionProfile> profile{nullptr};
+    std::shared_ptr<okapi::ChassisController> chassis{nullptr};
+    FFVelocityController left;
+    FFVelocityController right;
 
-    bool linearInit = false;
-    bool trajInit = false;
-    bool driveInit = false;
-    bool profileInit = false;
+    bool chassisInitialized{false};;
+    bool profileInitialized{false};
+    bool controllerInitialized{false};
 };
-}
+
+} // namespace ryan
